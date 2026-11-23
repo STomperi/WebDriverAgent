@@ -11,11 +11,13 @@
 #import <UIKit/UIKit.h>
 #import <XCTest/XCTest.h>
 
+#import "FBAlert.h"
 #import "FBKeyboard.h"
 #import "FBLogger.h"
 #import "FBXCTestDaemonsProxy.h"
 #import "XCPointerEventPath.h"
 #import "XCSynthesizedEventRecord.h"
+#import "XCUIApplication+FBAlert.h"
 #import "XCUIApplication+FBHelpers.h"
 #import "XCUIApplication.h"
 #import "XCUIDevice+FBHelpers.h"
@@ -146,6 +148,10 @@ static const double kMaxSwipeDurationMs = 10000.0;
     [self sendInfoToClient:client];
     return YES;
   }
+  if ([type isEqualToString:@"alert"]) {
+    [self sendAlertStateToClient:client];
+    return YES;
+  }
   if ([type isEqualToString:@"ping"]) {
     // Answered on the socket thread: measures the transport without any XCTest work.
     [self.socket writeData:[@"{}\n" dataUsingEncoding:NSUTF8StringEncoding] toClient:client];
@@ -205,6 +211,37 @@ static const double kMaxSwipeDurationMs = 10000.0;
                            @"scale": @(UIScreen.mainScreen.scale),
                            @"orientation": @((NSInteger)app.interfaceOrientation)};
     NSData *json = [NSJSONSerialization dataWithJSONObject:info options:0 error:nil];
+    NSMutableData *reply = [json mutableCopy];
+    [reply appendBytes:"\n" length:1];
+    [socket writeData:reply toClient:client];
+  });
+}
+
+/// Tells whether a system or app alert (for example a permission prompt) is on screen. The AirPlay video
+/// leaves such alerts out, so the Mac asks before deciding what to show.
+- (void)sendAlertStateToClient:(nw_connection_t)client
+{
+  FBTCPSocket *socket = self.socket;
+  if (nil == socket) {
+    return;
+  }
+  dispatch_async(dispatch_get_main_queue(), ^{
+    BOOL present = NO;
+    @try {
+      for (XCUIApplication *app in XCUIApplication.fb_activeApplications) {
+        if ([FBAlert alertWithApplication:app].isPresent) {
+          present = YES;
+          break;
+        }
+      }
+      if (!present) {
+        XCUIApplication *promptApp = XCUIApplication.fb_limitedAccessPromptApplication;
+        present = nil != promptApp && [FBAlert alertWithApplication:promptApp].isPresent;
+      }
+    } @catch (NSException *e) {
+      [FBLogger logFmt:@"InputTCP: alert check failed: %@", e.reason];
+    }
+    NSData *json = [NSJSONSerialization dataWithJSONObject:@{@"alert": @(present)} options:0 error:nil];
     NSMutableData *reply = [json mutableCopy];
     [reply appendBytes:"\n" length:1];
     [socket writeData:reply toClient:client];

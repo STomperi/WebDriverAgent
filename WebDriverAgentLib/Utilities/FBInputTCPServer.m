@@ -17,6 +17,7 @@
 #import "XCPointerEventPath.h"
 #import "XCSynthesizedEventRecord.h"
 #import "XCUIApplication+FBHelpers.h"
+#import "XCUIApplication.h"
 #import "XCUIDevice+FBHelpers.h"
 #import "XCUIDevice.h"
 #import "XCUIElement+FBTyping.h"
@@ -181,10 +182,14 @@ static const double kMaxSwipeDurationMs = 10000.0;
     return;
   }
   dispatch_async(dispatch_get_main_queue(), ^{
-    CGSize size = UIScreen.mainScreen.bounds.size;
+    // The frame of the foreground app is in the points of its current interface orientation,
+    // which is the coordinate space the synthesized touches use.
+    XCUIApplication *app = XCUIApplication.fb_activeApplication;
+    CGSize size = app.frame.size;
     NSDictionary *info = @{@"width": @(size.width),
                            @"height": @(size.height),
-                           @"scale": @(UIScreen.mainScreen.scale)};
+                           @"scale": @(UIScreen.mainScreen.scale),
+                           @"orientation": @((NSInteger)app.interfaceOrientation)};
     NSData *json = [NSJSONSerialization dataWithJSONObject:info options:0 error:nil];
     NSMutableData *reply = [json mutableCopy];
     [reply appendBytes:"\n" length:1];
@@ -209,6 +214,16 @@ static BOOL FBReadNumber(NSDictionary *msg, NSString *key, double min, double ma
   return YES;
 }
 
+/// A touch event record in the interface orientation the sender last saw (1-4), or the foreground app's.
+static XCSynthesizedEventRecord *FBMakeRecord(NSString *name, NSDictionary *msg)
+{
+  double orientation = 0;
+  if (!FBReadNumber(msg, @"orientation", 1, 4, &orientation)) {
+    orientation = (double)XCUIApplication.fb_activeApplication.interfaceOrientation;
+  }
+  return [[XCSynthesizedEventRecord alloc] initWithName:name interfaceOrientation:(long long)orientation];
+}
+
 #pragma mark - Handlers
 
 - (void)handleTap:(NSDictionary *)msg
@@ -217,7 +232,7 @@ static BOOL FBReadNumber(NSDictionary *msg, NSString *key, double min, double ma
   if (!FBReadNumber(msg, @"x", 0, kMaxCoordinate, &x) || !FBReadNumber(msg, @"y", 0, kMaxCoordinate, &y)) {
     return;
   }
-  XCSynthesizedEventRecord *record = [[XCSynthesizedEventRecord alloc] initWithName:@"MyPhone tap"];
+  XCSynthesizedEventRecord *record = FBMakeRecord(@"MyPhone tap", msg);
   XCPointerEventPath *path = [[XCPointerEventPath alloc] initForTouchAtPoint:CGPointMake(x, y) offset:0.0];
   [path liftUpAtOffset:0.05];
   [record addPointerEventPath:path];
@@ -241,7 +256,7 @@ static BOOL FBReadNumber(NSDictionary *msg, NSString *key, double min, double ma
     return;
   }
   double duration = durationMs / 1000.0;
-  XCSynthesizedEventRecord *record = [[XCSynthesizedEventRecord alloc] initWithName:@"MyPhone swipe"];
+  XCSynthesizedEventRecord *record = FBMakeRecord(@"MyPhone swipe", msg);
   XCPointerEventPath *path = [[XCPointerEventPath alloc] initForTouchAtPoint:CGPointMake(fromX, fromY) offset:0.0];
   [path moveToPoint:CGPointMake(toX, toY) atOffset:duration];
   [path liftUpAtOffset:duration + 0.01];

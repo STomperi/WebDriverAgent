@@ -29,7 +29,10 @@ NS_ASSUME_NONNULL_BEGIN
    {"type":"button","name":"home|volumeUp|volumeDown|..."}
    {"type":"keys","value":["text"]}
    {"type":"typeKey","key":"name","modifierFlags":N}
-   {"type":"info"}   -> replies with one JSON line: {"width","height","scale"}
+   {"type":"info"}   -> one JSON line: {"width","height","scale","orientation"}
+
+ Coordinates are points in the foreground app's interface orientation (the size
+ reported by "info"); "orientation" is optional and defaults to the app's own.
 
  Input messages are fire-and-forget: no reply is sent.
  */

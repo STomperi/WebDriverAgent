@@ -43,6 +43,7 @@ static const double kMaxSwipeDurationMs = 10000.0;
 
 @interface FBInputTCPServer ()
 @property (nonatomic, copy) NSString *token;
+@property (nonatomic, assign) BOOL logTiming;
 @property (nonatomic, strong) NSMapTable<id, FBInputClientState *> *clients;
 @end
 
@@ -52,6 +53,7 @@ static const double kMaxSwipeDurationMs = 10000.0;
 {
   if ((self = [super init])) {
     _token = [token copy];
+    _logTiming = NSProcessInfo.processInfo.environment[@"MYPHONE_INPUT_LOG_TIMING"].length > 0;
     _clients = [NSMapTable strongToStrongObjectsMapTable];
   }
   return self;
@@ -144,9 +146,16 @@ static const double kMaxSwipeDurationMs = 10000.0;
     [self sendInfoToClient:client];
     return YES;
   }
+  if ([type isEqualToString:@"ping"]) {
+    // Answered on the socket thread: measures the transport without any XCTest work.
+    [self.socket writeData:[@"{}\n" dataUsingEncoding:NSUTF8StringEncoding] toClient:client];
+    return YES;
+  }
 
   // XCTest event synthesis needs the main thread.
+  CFAbsoluteTime received = CFAbsoluteTimeGetCurrent();
   dispatch_async(dispatch_get_main_queue(), ^{
+    CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
     if ([type isEqualToString:@"tap"]) {
       [self handleTap:msg];
     } else if ([type isEqualToString:@"swipe"]) {
@@ -157,6 +166,11 @@ static const double kMaxSwipeDurationMs = 10000.0;
       [self handleKeys:msg];
     } else if ([type isEqualToString:@"typeKey"]) {
       [self handleTypeKey:msg];
+    }
+    if (self.logTiming) {
+      CFAbsoluteTime done = CFAbsoluteTimeGetCurrent();
+      [FBLogger logFmt:@"InputTCP timing: %@ queued %.1f ms, handled %.1f ms", type,
+       (started - received) * 1000.0, (done - started) * 1000.0];
     }
   });
   return YES;
@@ -214,6 +228,22 @@ static BOOL FBReadNumber(NSDictionary *msg, NSString *key, double min, double ma
   return YES;
 }
 
+/// Plays a touch event without blocking the main thread, so that the next input event is not held up
+/// until the previous gesture has finished on the phone.
+static void FBSynthesizeAsync(XCSynthesizedEventRecord *record, NSString *name, BOOL logTiming)
+{
+  CFAbsoluteTime start = CFAbsoluteTimeGetCurrent();
+  [[XCUIDevice.sharedDevice eventSynthesizer] synthesizeEvent:record
+    completion:(id)^(BOOL result, NSError *error) {
+      if (error) {
+        [FBLogger logFmt:@"InputTCP: %@ failed: %@", name, error.localizedDescription];
+      } else if (logTiming) {
+        [FBLogger logFmt:@"InputTCP timing: %@ completed %.1f ms after dispatch", name,
+         (CFAbsoluteTimeGetCurrent() - start) * 1000.0];
+      }
+    }];
+}
+
 /// A touch event record in the interface orientation the sender last saw (1-4), or the foreground app's.
 static XCSynthesizedEventRecord *FBMakeRecord(NSString *name, NSDictionary *msg)
 {
@@ -234,12 +264,9 @@ static XCSynthesizedEventRecord *FBMakeRecord(NSString *name, NSDictionary *msg)
   }
   XCSynthesizedEventRecord *record = FBMakeRecord(@"MyPhone tap", msg);
   XCPointerEventPath *path = [[XCPointerEventPath alloc] initForTouchAtPoint:CGPointMake(x, y) offset:0.0];
-  [path liftUpAtOffset:0.05];
+  [path liftUpAtOffset:0.02];
   [record addPointerEventPath:path];
-  NSError *error;
-  if (![FBXCTestDaemonsProxy synthesizeEventWithRecord:record error:&error]) {
-    [FBLogger logFmt:@"InputTCP: tap failed: %@", error.localizedDescription];
-  }
+  FBSynthesizeAsync(record, @"tap", self.logTiming);
 }
 
 - (void)handleSwipe:(NSDictionary *)msg
@@ -261,10 +288,7 @@ static XCSynthesizedEventRecord *FBMakeRecord(NSString *name, NSDictionary *msg)
   [path moveToPoint:CGPointMake(toX, toY) atOffset:duration];
   [path liftUpAtOffset:duration + 0.01];
   [record addPointerEventPath:path];
-  NSError *error;
-  if (![FBXCTestDaemonsProxy synthesizeEventWithRecord:record error:&error]) {
-    [FBLogger logFmt:@"InputTCP: swipe failed: %@", error.localizedDescription];
-  }
+  FBSynthesizeAsync(record, @"swipe", self.logTiming);
 }
 
 - (void)handleButton:(NSDictionary *)msg

@@ -29,6 +29,7 @@ NS_ASSUME_NONNULL_BEGIN
    {"type":"button","name":"home|volumeUp|volumeDown|..."}
    {"type":"keys","value":["text"]}
    {"type":"typeKey","key":"name","modifierFlags":N}
+   {"type":"ping"}   -> one line: {} (transport check)
    {"type":"info"}   -> one JSON line: {"width","height","scale","orientation"}
 
  Coordinates are points in the foreground app's interface orientation (the size

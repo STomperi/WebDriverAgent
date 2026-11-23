@@ -228,11 +228,17 @@ static const double kMaxSwipeDurationMs = 10000.0;
   dispatch_async(dispatch_get_main_queue(), ^{
     BOOL present = NO;
     @try {
+      // Cheap first: system alerts are shown by SpringBoard, which is then the active application.
+      // Looking inside the foreground app for an alert takes 0.3-0.5 s, so it is not done.
+      BOOL springboardActive = NO;
       for (XCUIApplication *app in XCUIApplication.fb_activeApplications) {
-        if ([FBAlert alertWithApplication:app].isPresent) {
-          present = YES;
+        if ([app.bundleID isEqualToString:@"com.apple.springboard"]) {
+          springboardActive = YES;
           break;
         }
+      }
+      if (springboardActive) {
+        present = [XCUIApplication.fb_systemApplication.alerts.firstMatch exists];
       }
       if (!present) {
         XCUIApplication *promptApp = XCUIApplication.fb_limitedAccessPromptApplication;

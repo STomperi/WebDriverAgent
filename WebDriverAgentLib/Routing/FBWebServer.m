@@ -9,6 +9,9 @@
 #import "FBWebServer.h"
 
 #import "FBHTTPServer.h"
+#if !TARGET_OS_WATCH
+#import "FBInputTCPServer.h"
+#endif
 #import "FBMjpegServer.h"
 #import "FBTCPSocket.h"
 
@@ -34,6 +37,10 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
 @property (nonatomic, strong) FBHTTPServer *server;
 @property (nonatomic, nullable) FBTCPSocket *screenshotsBroadcaster;
 @property (nonatomic, nullable, strong) FBMjpegServer *mjpegServer;
+@property (nonatomic, nullable) FBTCPSocket *inputSocket;
+#if !TARGET_OS_WATCH
+@property (nonatomic, nullable, strong) FBInputTCPServer *inputServer;
+#endif
 @property (atomic, assign) BOOL keepAlive;
 @end
 
@@ -67,6 +74,7 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
     return;
   }
   [self initScreenshotsBroadcaster];
+  [self initInputServer];
 
   self.keepAlive = YES;
   NSRunLoop *runLoop = [NSRunLoop mainRunLoop];
@@ -147,6 +155,48 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
   }
 }
 
+/**
+ Optional low-latency input channel used by MyPhone for Mac. Only started when the
+ MYPHONE_INPUT_TOKEN environment variable is set; it is bound to 127.0.0.1 only
+ (MYPHONE_INPUT_PORT, default 9300).
+ */
+- (void)initInputServer
+{
+#if !TARGET_OS_WATCH
+  NSDictionary *env = NSProcessInfo.processInfo.environment;
+  NSString *token = env[@"MYPHONE_INPUT_TOKEN"];
+  if (token.length < 16) {
+    return;
+  }
+  NSInteger port = [env[@"MYPHONE_INPUT_PORT"] integerValue] ?: 9300;
+  if (port <= 0 || port > UINT16_MAX) {
+    return;
+  }
+  self.inputServer = [[FBInputTCPServer alloc] initWithToken:token];
+  self.inputSocket = [[FBTCPSocket alloc] initWithPort:(uint16_t)port];
+  self.inputSocket.interface = @"127.0.0.1";
+  self.inputServer.socket = self.inputSocket;
+  self.inputSocket.delegate = self.inputServer;
+  NSError *error;
+  if (![self.inputSocket startWithError:&error]) {
+    [FBLogger logFmt:@"Cannot start the input server on port %ld. Original error: %@", (long)port, error.description];
+    [self stopInputServer];
+    return;
+  }
+  [FBLogger logFmt:@"MyPhone input server listening on 127.0.0.1:%ld", (long)port];
+#endif
+}
+
+- (void)stopInputServer
+{
+  self.inputSocket.delegate = nil;
+  [self.inputSocket stop];
+  self.inputSocket = nil;
+#if !TARGET_OS_WATCH
+  self.inputServer = nil;
+#endif
+}
+
 - (void)stopScreenshotsBroadcaster
 {
   if (nil == self.screenshotsBroadcaster) {
@@ -199,6 +249,7 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
   [NSNotificationCenter.defaultCenter removeObserver:self name:FBSessionWasKilledNotification object:nil];
   [FBSession.activeSession kill];
   [self stopScreenshotsBroadcaster];
+  [self stopInputServer];
   if (self.server.isRunning) {
     [self.server stop:NO];
   }

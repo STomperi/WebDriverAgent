@@ -47,6 +47,9 @@ static const double kMaxSwipeDurationMs = 10000.0;
 @property (nonatomic, copy) NSString *token;
 @property (nonatomic, assign) BOOL logTiming;
 @property (nonatomic, strong) NSMapTable<id, FBInputClientState *> *clients;
+/// Text waiting to be typed and whether a typing event is playing (main thread only).
+@property (nonatomic, strong) NSMutableString *pendingText;
+@property (nonatomic, assign) BOOL typing;
 @end
 
 @implementation FBInputTCPServer
@@ -358,11 +361,43 @@ static XCSynthesizedEventRecord *FBMakeRecord(NSString *name, NSDictionary *msg)
     }
   }
   NSString *text = [value componentsJoinedByString:@""];
-  NSError *error;
-  if (!FBTypeText(text, 60, &error)) {
-    // Never log the text itself.
-    [FBLogger logFmt:@"InputTCP: typing failed: %@", error.localizedDescription];
+  // One typing event plays at a time (events that overlap lose and reorder characters), and everything that
+  // arrives meanwhile is typed as one batch, so fast typing does not queue up at 0.3 s per keystroke.
+  if (nil == self.pendingText) {
+    self.pendingText = [NSMutableString string];
   }
+  [self.pendingText appendString:text];
+  [self typePending];
+}
+
+- (void)typePending
+{
+  if (self.typing || self.pendingText.length == 0) {
+    return;
+  }
+  NSString *text = [self.pendingText copy];
+  [self.pendingText setString:@""];
+  self.typing = YES;
+  // The name is a label only; it never contains the text.
+  XCSynthesizedEventRecord *record = [[XCSynthesizedEventRecord alloc] initWithName:@"MyPhone keys"];
+  XCPointerEventPath *path = [[XCPointerEventPath alloc] initForTextInput];
+  [path typeText:text atOffset:0.0 typingSpeed:200 shouldRedact:NO];
+  [record addPointerEventPath:path];
+  CFAbsoluteTime start = CFAbsoluteTimeGetCurrent();
+  BOOL logTiming = self.logTiming;
+  [[XCUIDevice.sharedDevice eventSynthesizer] synthesizeEvent:record
+    completion:(id)^(BOOL result, NSError *error) {
+      if (error) {
+        [FBLogger logFmt:@"InputTCP: typing failed: %@", error.localizedDescription];
+      } else if (logTiming) {
+        [FBLogger logFmt:@"InputTCP timing: keys (%lu characters) completed %.1f ms after dispatch",
+         (unsigned long)text.length, (CFAbsoluteTimeGetCurrent() - start) * 1000.0];
+      }
+      dispatch_async(dispatch_get_main_queue(), ^{
+        self.typing = NO;
+        [self typePending];
+      });
+    }];
 }
 
 - (void)handleTypeKey:(NSDictionary *)msg
